@@ -1,5 +1,6 @@
 import { _clearTimeout, _setTimeout } from "../../timers.js";
 import type { Command, CommandContext, ExecResult } from "../../types.js";
+import { parseDuration } from "../duration.js";
 import { hasHelpFlag, showHelp } from "../help.js";
 
 const sleepHelp = {
@@ -18,30 +19,6 @@ NUMBER may be a decimal number.`,
 
 /** Maximum sleep duration: 1 hour (prevents DoS via indefinite blocking) */
 const MAX_SLEEP_MS = 3_600_000;
-
-/**
- * Parse sleep duration string to milliseconds
- */
-function parseDuration(arg: string): number | null {
-  const match = arg.match(/^(\d+\.?\d*)(s|m|h|d)?$/);
-  if (!match) return null;
-
-  const value = parseFloat(match[1]);
-  const suffix = match[2] || "s";
-
-  switch (suffix) {
-    case "s":
-      return value * 1000;
-    case "m":
-      return value * 60 * 1000;
-    case "h":
-      return value * 60 * 60 * 1000;
-    case "d":
-      return value * 24 * 60 * 60 * 1000;
-    default:
-      return null;
-  }
-}
 
 export const sleepCommand: Command = {
   name: "sleep",
@@ -87,17 +64,18 @@ export const sleepCommand: Command = {
     if (ctx.sleep) {
       await ctx.sleep(totalMs);
     } else if (ctx.signal) {
-      // Abort-aware sleep: resolve early if the signal fires
+      // Abort-aware sleep: resolve early if the signal fires.
+      // Named handler so we can remove it when the timer resolves normally.
       await new Promise<void>((resolve) => {
-        const timer = _setTimeout(resolve, totalMs);
-        ctx.signal?.addEventListener(
-          "abort",
-          () => {
-            _clearTimeout(timer);
-            resolve();
-          },
-          { once: true },
-        );
+        const onAbort = () => {
+          _clearTimeout(timer);
+          resolve();
+        };
+        const timer = _setTimeout(() => {
+          ctx.signal?.removeEventListener("abort", onAbort);
+          resolve();
+        }, totalMs);
+        ctx.signal?.addEventListener("abort", onAbort, { once: true });
       });
     } else {
       await new Promise((resolve) => _setTimeout(resolve, totalMs));
